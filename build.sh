@@ -49,35 +49,35 @@ mkdir -p build-binutils && cd build-binutils
 
 echo "[*] Configuring binutils..."
 ../binutils-$BINUTILS_VERSION/configure --target=$TARGET --prefix=$PREFIX --disable-nls --disable-werror
-make -j$JOBS
-make install
+sudo make -j$JOBS
+sudo make install
 cd ..
 
 # --- STEP 2: Build GCC ---
 echo "[*] Downloading GCC..."
 wget https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.gz
-tar xvf gcc-$GCC_VERSION.tar.gz
+tar xvf gcc-$GCC_VERSION.tar.g
 mkdir -p build-gcc && cd build-gcc
 
 echo "[*] Configuring GCC..."
 ../gcc-$GCC_VERSION/configure --target=$TARGET --prefix=$PREFIX --disable-nls --enable-languages=c,c++ --without-headers
-make all-gcc -j$JOBS
-make all-target-libgcc -j$JOBS
-make install-gcc
-make install-target-libgcc
+sudo make all-gcc -j$JOBS
+sudo make all-target-libgcc -j$JOBS
+sudo make install-gcc
+sudo make install-target-libgcc
 cd ..
 
 # --- STEP 3: Create custom names ---
 echo "[*] Creating custom tool names..."
 cd $PREFIX/bin
-ln -sf $TARGET-gcc fwgcc
-ln -sf $TARGET-g++ fwg++
-ln -sf $TARGET-ld fwld
-ln -sf $TARGET-as fwas
-ln -sf $TARGET-ar fwar
-ln -sf $TARGET-objcopy fwobjcopy
-ln -sf $TARGET-objdump fwobjdump
-ln -sf $TARGET-nm fwnm
+sudo ln -sf $TARGET-gcc fwgcc
+sudo ln -sf $TARGET-g++ fwg++
+sudo ln -sf $TARGET-ld fwld
+sudo ln -sf $TARGET-as fwas
+sudo ln -sf $TARGET-ar fwar
+sudo ln -sf $TARGET-objcopy fwobjcopy
+sudo ln -sf $TARGET-objdump fwobjdump
+sudo ln -sf $TARGET-nm fwnm
 
 # --- STEP 4: Update PATH ---
 echo "[*] Adding $PREFIX/bin to your shell PATH..."
@@ -111,5 +111,5 @@ else
 fi
 
 echo "[*] fwtoolchain installed successfully!"
-echo "Restart your terminal or run: source ~/.bashrc"
+echo "Restart your terminal to take effects."
 echo "Test: fwgcc --version"
