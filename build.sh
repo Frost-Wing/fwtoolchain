@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 set -e
 
 # --- CONFIG ---
@@ -11,8 +10,36 @@ GCC_VERSION=13.2.0
 
 # --- STEP 0: Install prerequisites ---
 echo "[*] Installing prerequisites..."
-sudo apt update
-sudo apt install -y build-essential bison flex libgmp3-dev libmpfr-dev libmpc-dev texinfo libisl-dev wget
+
+install_deps() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        case "$ID" in
+            ubuntu|debian)
+                sudo apt update
+                sudo apt install -y build-essential bison flex libgmp3-dev libmpfr-dev libmpc-dev texinfo libisl-dev wget
+                ;;
+            arch|manjaro)
+                sudo pacman -S --needed base-devel bison flex gmp mpfr libmpc texinfo isl wget
+                ;;
+            fedora)
+                sudo dnf install -y @development-tools bison flex gmp-devel mpfr-devel libmpc-devel texinfo isl wget
+                ;;
+            opensuse*|sles)
+                sudo zypper install -y gcc make bison flex gmp-devel mpfr-devel libmpc-devel texinfo isl wget
+                ;;
+            *)
+                echo "Unsupported distribution ($ID). Please install build tools and GMP/MPFR/MPC/ISL manually."
+                exit 1
+                ;;
+        esac
+    else
+        echo "Cannot detect distribution (missing /etc/os-release)."
+        exit 1
+    fi
+}
+
+install_deps
 
 # --- STEP 1: Build binutils ---
 echo "[*] Downloading binutils..."
@@ -53,9 +80,34 @@ ln -sf $TARGET-objdump fwobjdump
 ln -sf $TARGET-nm fwnm
 
 # --- STEP 4: Update PATH ---
-echo "[*] Adding $PREFIX/bin to PATH..."
-if ! grep -q "$PREFIX/bin" ~/.bashrc; then
-    echo "export PATH=\$PATH:$PREFIX/bin" >> ~/.bashrc
+echo "[*] Adding $PREFIX/bin to your shell PATH..."
+
+SHELL_NAME=$(basename "$SHELL")
+
+case "$SHELL_NAME" in
+    bash)
+        RC_FILE="$HOME/.bashrc"
+        ;;
+    zsh)
+        RC_FILE="$HOME/.zshrc"
+        ;;
+    fish)
+        RC_FILE="$HOME/.config/fish/config.fish"
+        ;;
+    *)
+        RC_FILE="$HOME/.profile"
+        ;;
+esac
+
+if ! grep -q "$PREFIX/bin" "$RC_FILE" 2>/dev/null; then
+    if [ "$SHELL_NAME" = "fish" ]; then
+        echo "set -gx PATH \$PATH $PREFIX/bin" >> "$RC_FILE"
+    else
+        echo "export PATH=\$PATH:$PREFIX/bin" >> "$RC_FILE"
+    fi
+    echo "[*] Added $PREFIX/bin to $RC_FILE"
+else
+    echo "[*] PATH already configured in $RC_FILE"
 fi
 
 echo "[*] fwtoolchain installed successfully!"
