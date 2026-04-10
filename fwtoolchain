@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+set -e
+
+# ================================
+# CONFIG
+# ================================
+PREFIX="/opt/fwtoolchain"
+TARGET="x86_64-elf"
+JOBS="$(nproc)"
+
+BINUTILS_VERSION="2.42"
+GCC_VERSION="13.2.0"
+
+BUILD_DIR="$HOME/.fwtoolchain-build"
+
+# ================================
+# COMMON FUNCTIONS
+# ================================
+install_deps() {
+    echo "[*] Installing dependencies..."
+
+    . /etc/os-release
+
+    case "$ID" in
+        ubuntu|debian)
+            sudo apt update
+            sudo apt install -y build-essential bison flex libgmp3-dev libmpfr-dev libmpc-dev texinfo libisl-dev wget
+            ;;
+        arch|manjaro)
+            sudo pacman -S --needed base-devel bison flex gmp mpfr libmpc texinfo isl wget
+            ;;
+        fedora)
+            sudo dnf install -y @development-tools bison flex gmp-devel mpfr-devel libmpc-devel texinfo isl wget
+            ;;
+        opensuse*|sles)
+            sudo zypper install -y gcc make bison flex gmp-devel mpfr-devel libmpc-devel texinfo isl wget
+            ;;
+        *)
+            echo "[!] Unsupported distro"
+            exit 1
+            ;;
+    esac
+}
+
+add_to_path() {
+    SHELL_NAME="$(basename "$SHELL")"
+
+    case "$SHELL_NAME" in
+        bash) RC_FILE="$HOME/.bashrc" ;;
+        zsh)  RC_FILE="$HOME/.zshrc" ;;
+        fish) RC_FILE="$HOME/.config/fish/config.fish" ;;
+        *)    RC_FILE="$HOME/.profile" ;;
+    esac
+
+    if ! grep -q "$PREFIX/bin" "$RC_FILE" 2>/dev/null; then
+        if [ "$SHELL_NAME" = "fish" ]; then
+            echo "set -gx PATH \$PATH $PREFIX/bin" >> "$RC_FILE"
+        else
+            echo "export PATH=\$PATH:$PREFIX/bin" >> "$RC_FILE"
+        fi
+        echo "[*] PATH updated in $RC_FILE"
+    fi
+
+    export PATH="$PATH:$PREFIX/bin"
+}
+
+remove_from_path() {
+    echo "[*] Removing PATH entry..."
+
+    for file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.config/fish/config.fish"; do
+        [ -f "$file" ] || continue
+        sed -i "\|$PREFIX/bin|d" "$file"
+    done
+}
+
+create_aliases() {
+    cd "$PREFIX/bin"
+
+    sudo ln -sf $TARGET-gcc fwgcc
+    sudo ln -sf $TARGET-g++ fwg++
+    sudo ln -sf $TARGET-ld fwld
+    sudo ln -sf $TARGET-as fwas
+    sudo ln -sf $TARGET-ar fwar
+    sudo ln -sf $TARGET-objcopy fwobjcopy
+    sudo ln -sf $TARGET-objdump fwobjdump
+    sudo ln -sf $TARGET-nm fwnm
+}
+
+# ================================
+# INSTALL
+# ================================
+install_toolchain() {
+    if [ -d "$PREFIX" ]; then
+        echo "[!] Already installed at $PREFIX"
+        exit 1
+    fi
+
+    mkdir -p "$BUILD_DIR"
+    cd "$BUILD_DIR"
+
+    install_deps
+
+    echo "[*] Building binutils..."
+    wget -nc https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VERSION.tar.gz
+    tar xf binutils-$BINUTILS_VERSION.tar.gz
+
+    mkdir build-binutils && cd build-binutils
+    ../binutils-$BINUTILS_VERSION/configure \
+        --target=$TARGET \
+        --prefix=$PREFIX \
+        --with-sysroot \
+        --disable-nls \
+        --disable-werror
+
+    make -j$JOBS
+    sudo make install
+    cd ..
+
+    echo "[*] Building GCC..."
+    wget -nc https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.gz
+    tar xf gcc-$GCC_VERSION.tar.gz
+
+    cd gcc-$GCC_VERSION
+    ./contrib/download_prerequisites
+    cd ..
+
+    mkdir build-gcc && cd build-gcc
+    ../gcc-$GCC_VERSION/configure \
+        --target=$TARGET \
+        --prefix=$PREFIX \
+        --disable-nls \
+        --enable-languages=c,c++ \
+        --without-headers \
+        --disable-shared \
+        --disable-threads \
+        --disable-libstdcxx \
+        --with-sysroot
+
+    make all-gcc -j$JOBS
+    make all-target-libgcc -j$JOBS
+
+    sudo make install-gcc
+    sudo make install-target-libgcc
+
+    create_aliases
+    add_to_path
+
+    echo "[*] Cleaning..."
+    rm -rf "$BUILD_DIR"
+
+    echo "[✓] Installed!"
+}
+
+# ================================
+# UNINSTALL
+# ================================
+uninstall_toolchain() {
+    if [ ! -d "$PREFIX" ]; then
+        echo "[!] Not installed"
+        exit 1
+    fi
+
+    echo "[*] Removing toolchain..."
+    sudo rm -rf "$PREFIX"
+
+    remove_from_path
+
+    echo "[✓] Uninstalled!"
+}
+
+# ================================
+# REBUILD
+# ================================
+rebuild_toolchain() {
+    echo "[*] Rebuilding..."
+    uninstall_toolchain || true
+    install_toolchain
+}
+
+# ================================
+# ENTRY POINT
+# ================================
+case "$1" in
+    install)
+        install_toolchain
+        ;;
+    uninstall)
+        uninstall_toolchain
+        ;;
+    rebuild)
+        rebuild_toolchain
+        ;;
+    *)
+        echo "Usage: $0 {install|uninstall|rebuild}"
+        exit 1
+        ;;
+esac
