@@ -26,7 +26,7 @@ install_deps() {
             sudo apt update
             sudo apt install -y build-essential bison flex libgmp3-dev libmpfr-dev libmpc-dev texinfo libisl-dev wget
             ;;
-        arch|manjaro)
+        arch|manjaro|omarchy)
             sudo pacman -S --needed base-devel bison flex gmp mpfr libmpc texinfo isl wget
             ;;
         fedora)
