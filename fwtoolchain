@@ -12,6 +12,7 @@ BINUTILS_VERSION="2.42"
 GCC_VERSION="13.2.0"
 
 BUILD_DIR="$HOME/.fwtoolchain-build"
+STAMP_DIR="$BUILD_DIR/.stamps"
 
 # ================================
 # COMMON FUNCTIONS
@@ -74,81 +75,156 @@ remove_from_path() {
 }
 
 create_aliases() {
-    cd "$PREFIX/bin"
-
-    sudo ln -sf $TARGET-gcc fwgcc
-    sudo ln -sf $TARGET-g++ fwg++
-    sudo ln -sf $TARGET-ld fwld
-    sudo ln -sf $TARGET-as fwas
-    sudo ln -sf $TARGET-ar fwar
-    sudo ln -sf $TARGET-objcopy fwobjcopy
-    sudo ln -sf $TARGET-objdump fwobjdump
-    sudo ln -sf $TARGET-nm fwnm
+    (
+        cd "$PREFIX/bin" || exit 1
+        for tool in gcc g++ ld as ar objcopy objdump nm; do
+            sudo ln -sf "$TARGET-$tool" "fw$tool"
+        done
+    )
 }
 
 # ================================
-# INSTALL
+# RESUME SUPPORT
 # ================================
-install_toolchain() {
-    if [ -d "$PREFIX" ]; then
-        echo "[!] Already installed at $PREFIX"
-        exit 1
+
+# step <name> <function>: skip if already done, otherwise run and mark done
+step() {
+    local name="$1" fn="$2"
+    if [ -f "$STAMP_DIR/$name" ]; then
+        echo "[=] $name already done, skipping"
+        return 0
     fi
+    "$fn"
+    touch "$STAMP_DIR/$name"
+}
 
-    mkdir -p "$BUILD_DIR"
-    cd "$BUILD_DIR"
+# fetch <url>: resumable download; re-downloads only if the file is corrupt
+fetch() {
+    local url="$1" file
+    file="$BUILD_DIR/$(basename "$url")"
 
-    install_deps
+    wget -c -P "$BUILD_DIR" "$url"
 
-    echo "[*] Building binutils..."
-    wget -nc https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VERSION.tar.gz
-    tar xf binutils-$BINUTILS_VERSION.tar.gz
+    if ! tar tzf "$file" >/dev/null 2>&1; then
+        echo "[!] $(basename "$file") is corrupt, downloading again"
+        rm -f "$file"
+        wget -P "$BUILD_DIR" "$url"
+    fi
+}
 
-    mkdir build-binutils && cd build-binutils
-    ../binutils-$BINUTILS_VERSION/configure \
-        --target=$TARGET \
-        --prefix=$PREFIX \
+# ================================
+# STEPS
+# ================================
+step_binutils_src() {
+    echo "[*] Fetching binutils..."
+    fetch "https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VERSION.tar.gz"
+    rm -rf "$BUILD_DIR/binutils-$BINUTILS_VERSION"
+    tar -C "$BUILD_DIR" -xf "$BUILD_DIR/binutils-$BINUTILS_VERSION.tar.gz"
+}
+
+step_binutils_configure() {
+    echo "[*] Configuring binutils..."
+    rm -rf "$BUILD_DIR/build-binutils"
+    mkdir -p "$BUILD_DIR/build-binutils"
+    cd "$BUILD_DIR/build-binutils"
+    "$BUILD_DIR/binutils-$BINUTILS_VERSION/configure" \
+        --target="$TARGET" \
+        --prefix="$PREFIX" \
         --with-sysroot \
         --disable-nls \
         --disable-werror
+}
 
-    make -j$JOBS
+step_binutils_build() {
+    echo "[*] Building binutils..."
+    cd "$BUILD_DIR/build-binutils"
+    make -j"$JOBS"
+}
+
+step_binutils_install() {
+    echo "[*] Installing binutils..."
+    cd "$BUILD_DIR/build-binutils"
     sudo make install
-    cd ..
+}
 
-    echo "[*] Building GCC..."
-    wget -nc https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.gz
-    tar xf gcc-$GCC_VERSION.tar.gz
+step_gcc_src() {
+    echo "[*] Fetching GCC..."
+    fetch "https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.gz"
+    rm -rf "$BUILD_DIR/gcc-$GCC_VERSION"
+    tar -C "$BUILD_DIR" -xf "$BUILD_DIR/gcc-$GCC_VERSION.tar.gz"
+}
 
-    cd gcc-$GCC_VERSION
-    ./contrib/download_prerequisites
-    cd ..
+step_gcc_prereq() {
+    echo "[*] Using system GMP/MPFR/MPC (skipping bundled prerequisites)"
+}
 
-    mkdir build-gcc && cd build-gcc
-    ../gcc-$GCC_VERSION/configure \
-        --target=$TARGET \
-        --prefix=$PREFIX \
+step_gcc_configure() {
+    echo "[*] Configuring GCC..."
+    rm -rf "$BUILD_DIR/build-gcc"
+    mkdir -p "$BUILD_DIR/build-gcc"
+    cd "$BUILD_DIR/build-gcc"
+    CC="gcc -std=gnu17" CXX="g++ -std=gnu++17" \
+    "$BUILD_DIR/gcc-$GCC_VERSION/configure" \
+        --target="$TARGET" \
+        --prefix="$PREFIX" \
         --disable-nls \
         --enable-languages=c,c++ \
         --without-headers \
         --disable-shared \
         --disable-threads \
         --disable-libstdcxx \
+        --without-isl \
         --with-sysroot
+}
 
-    make all-gcc -j$JOBS
-    make all-target-libgcc -j$JOBS
+step_gcc_build() {
+    echo "[*] Building GCC..."
+    cd "$BUILD_DIR/build-gcc"
+    make all-gcc -j"$JOBS"
+    make all-target-libgcc -j"$JOBS"
+}
 
+step_gcc_install() {
+    echo "[*] Installing GCC..."
+    cd "$BUILD_DIR/build-gcc"
     sudo make install-gcc
     sudo make install-target-libgcc
+}
 
-    create_aliases
-    add_to_path
+# ================================
+# INSTALL (resumable)
+# ================================
+install_toolchain() {
+    mkdir -p "$STAMP_DIR"
 
-    echo "[*] Cleaning..."
-    rm -rf "$BUILD_DIR"
+    if [ -f "$STAMP_DIR/done" ]; then
+        if [ -d "$PREFIX" ]; then
+            echo "[!] Already installed at $PREFIX"
+            return 1
+        fi
+        # prefix was removed manually: forget install-phase stamps
+        rm -f "$STAMP_DIR"/{binutils-install,gcc-install,aliases,path,done}
+    fi
 
-    echo "[✓] Installed!"
+    # so GCC's build finds the freshly installed binutils
+    export PATH="$PREFIX/bin:$PATH"
+
+    step deps               install_deps
+    step binutils-src       step_binutils_src
+    step binutils-configure step_binutils_configure
+    step binutils-build     step_binutils_build
+    step binutils-install   step_binutils_install
+    step gcc-src            step_gcc_src
+    step gcc-prereq         step_gcc_prereq
+    step gcc-configure      step_gcc_configure
+    step gcc-build          step_gcc_build
+    step gcc-install        step_gcc_install
+    step aliases            create_aliases
+    step path               add_to_path
+
+    touch "$STAMP_DIR/done"
+    cd "$HOME"
+    echo "[✓] Installed! (run '$0 clean' to delete cached sources/build files)"
 }
 
 # ================================
@@ -157,41 +233,49 @@ install_toolchain() {
 uninstall_toolchain() {
     if [ ! -d "$PREFIX" ]; then
         echo "[!] Not installed"
-        exit 1
+        return 1
     fi
 
     echo "[*] Removing toolchain..."
     sudo rm -rf "$PREFIX"
-
     remove_from_path
+
+    # forget install-phase progress, keep downloads and sources
+    rm -f "$STAMP_DIR"/{binutils-install,gcc-install,aliases,path,done}
 
     echo "[✓] Uninstalled!"
 }
 
 # ================================
-# REBUILD
+# REBUILD: keeps downloads + extracted sources, recompiles from scratch
 # ================================
 rebuild_toolchain() {
     echo "[*] Rebuilding..."
     uninstall_toolchain || true
+    rm -rf "$BUILD_DIR/build-binutils" "$BUILD_DIR/build-gcc"
+    rm -f "$STAMP_DIR"/*-configure "$STAMP_DIR"/*-build "$STAMP_DIR"/done
     install_toolchain
+}
+
+# ================================
+# CLEAN: delete all cached downloads/sources/build files
+# ================================
+clean_cache() {
+    echo "[*] Removing $BUILD_DIR ..."
+    rm -rf "$BUILD_DIR"
+    echo "[✓] Cache cleaned"
 }
 
 # ================================
 # ENTRY POINT
 # ================================
 case "$1" in
-    install)
-        install_toolchain
-        ;;
-    uninstall)
-        uninstall_toolchain
-        ;;
-    rebuild)
-        rebuild_toolchain
-        ;;
+    install)   install_toolchain ;;
+    uninstall) uninstall_toolchain ;;
+    rebuild)   rebuild_toolchain ;;
+    clean)     clean_cache ;;
     *)
-        echo "Usage: $0 {install|uninstall|rebuild}"
+        echo "Usage: $0 {install|uninstall|rebuild|clean}"
         exit 1
         ;;
 esac
